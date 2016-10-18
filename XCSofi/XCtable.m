@@ -1,0 +1,141 @@
+function  [table occurrence distFactor] = XCtable( ord, variance )
+% returns a table containing combinations of pixels used to compute virtual 
+% pixels as well as a table containing the inter pixel distances of a combination.
+% occurrence counts how often a certain distance occures
+% 
+%     table = table(X,Y,i,k,n,xy), size(table) = ord ,ord ,ord ,arbitrary ,ord ,2
+%     distTable = distTable(X,Y,i,k)
+%     distFactor = distFactor(X,Y,i,k) = distance factor 
+%     X|Y: integer coordinates of virtual pixel in 4x4 coordinate system between real pixels  
+%       i: minimum time lag necessary to form a certain combination
+%       n: number of pixel in current combination (1:ord)
+%      xy: x and y coordinate of nth real pixel used
+% 
+% ord = cumulant order = maximum number of frames used to combine pixels
+% pool_size            = edge length of pool from which combinations are chosen
+%                        (about the size of the PSF)
+
+if nargin == 0, ord = 4; end
+pool_size = 4;
+sqr_size = pool_size^2;
+if nargin < 2, variance = pool_size; end
+combos = [];
+% find all possible (unique! -> regardless of order) combinations to draw
+% ord out of sqr_size pixels.
+for i = 1:ord
+    combos = [combos (1:sqr_size)]; 
+end
+combos = combntns(combos,ord);
+combos = sort(combos,2,'descend');
+combos = unique(combos,'rows');
+
+% map combinations onto 2d array (pool_size x pool_size) -> x and y
+% coordinates of all pixels used in the combination.
+x = zeros(size(combos,1),ord); y = zeros(size(x));
+for k = 1:ord
+    [x(:,k),y(:,k)] = ind2sub([pool_size,pool_size],combos(:,k));
+end
+clear('combos');
+
+% average position of pixels within a combination
+center = [sum(x,2),sum(y,2)];
+center = center/ord;
+% only positions of virtual pixels that can unambigouosly be assigned
+% to one pixel are left.
+ind1 = center(:,1)<ceil(pool_size/2);
+ind2 = center(:,2)<ceil(pool_size/2);
+ind = ind1|ind2;
+center(ind,:) = [];
+x(ind,:) = [];
+y(ind,:) = [];
+
+ind1 = center(:,1)>=ceil(pool_size/2)+1;
+ind2 = center(:,2)>=ceil(pool_size/2)+1;
+ind = ind1|ind2;
+center(ind,:) = [];
+x(ind,:) = [];
+y(ind,:) = [];
+
+% get distances between pixels within a combination for all combinations
+% and find out what time lag is used.
+% distances are calculated between two pixels -> nchoosek(,2).
+% 1:ord are all possible pairs in the combination
+% -> nchoosek(1:ord) = #connections in the polygon formed by the pixels.
+% tau has the value 1 when two pixels have the same coordinates (only separated in time)
+distcombs = nchoosek(1:ord,2);
+tau = zeros(size(x,1),size(distcombs,1)); % time lags
+dist = zeros(size(tau));
+for k = 1: size(distcombs,1)
+    dist(:,k) = (sqrt((x(:,distcombs(k,1))-x(:,distcombs(k,2))).^2+(y(:,distcombs(k,1))-y(:,distcombs(k,2))).^2));
+    tau(:,k) = dist(:,k) == 0;
+end
+% @TODO does the choice of variance make sense?
+% dFactor = II(U((r_i-r_j)/sqrt(n))), the PSF size is asumed to be pool_size (FWHM)
+dFactor = exp(-sum(dist.^2,2)/(ord*2*variance));
+totaldist = sum(dist,2); % 'quality grade' of a combination, the lower the better.
+% distinguish via time lag: ith combination needs at least time_lag(i) frames to form
+
+numcomb = 200;% arbitrary cutoff number
+time_lag = sum(tau,2);
+for i = 1:size(time_lag,1)
+    if time_lag(i) == 1 || time_lag(i) == 2
+        time_lag(i) = 1; % minimum number of frames needed for combination
+    end
+    if time_lag(i) == 3, time_lag(i) = 2; end
+    if time_lag(i) > 3, time_lag(i) = 3; end
+end
+[dummydist index] = sort(totaldist,'ascend');
+[sorted_center center_index] = sortrows(center);
+
+% tabular of best combinations for each time lag (and each virtual pixel)
+% table( x coords of virtual pixel, y coords,time lag, quality grade, number of pixel in combination, x & y coordinates )
+table = zeros(ord,ord,ord,numcomb,ord,2); 
+distTable = -1*ones(ord,ord,ord,numcomb); %cannot take zeros because some calculated values are zeros so take arbitrary impossible number instead (10000)
+occurrence = zeros(size(distTable));
+distFactor = zeros(size(distTable));
+for X = 1:ord % y center coordinate
+    for Y = 1:ord % x center coordinate
+        current_position = 2*ones(size(sorted_center));
+        current_position(:,1) = current_position(:,1)+(X-1)/ord;
+        current_position(:,2) = current_position(:,2)+(Y-1)/ord;
+        %indices of combinations whose centers lie at current_position (virtual pixel) 
+        %are stored in currentlist in ascending order
+        currentlist = all(sorted_center==current_position,2);
+        currentlist = center_index(currentlist~=0);
+
+        for i = 1:ord %i-1 == time_lag
+            tmpIndex = zeros(size(currentlist,1),1);
+            k=1;
+            for j= 1:size(currentlist,1) %all combinations leading to a certain center position.
+                % combinations are ordered with respect to time lag 
+                if time_lag(currentlist(j,1)) == i-1 
+                    % index of the combination leading to the virtual pixel X,Y
+                    % with time lag i-1 is stored in tmpIndex
+                    tmpIndex(k) = currentlist(j,1);
+                    k = k+1;
+                end
+            end
+            % reorder tmpIndex, so that indices of combinations with minimal inter pixel distances are on top
+            tmpIndex = tmpIndex(tmpIndex~=0);
+            [dummy dummyIndex] = ismember(tmpIndex,index);
+            dummyIndex = sort(dummyIndex,'ascend');
+            %now combinations are ordered by inter pixel distance (in ascending order)
+            tmpIndex = index(dummyIndex);
+
+            for k = 1:size(tmpIndex,1)
+                for n = 1:ord
+                    table(X,Y,i,k,n,:) = [x(tmpIndex(k),n) y(tmpIndex(k),n)]; 
+                end
+                distTable(X,Y,i,k) = totaldist(tmpIndex(k));
+                distFactor(X,Y,i,k) = dFactor(tmpIndex(k));
+            end
+            % find out how often each distance occures
+            dummy = squeeze(distTable(X,Y,i,distTable(X,Y,i,:)~=-1));
+            dummy = round(dummy.*10000)/10000; %to get rid of numeric artifacts (as +2.3E-15) 
+            unqdummy = unique(dummy);
+            occurrence(X,Y,i,1:size(unqdummy,1)) = histc(dummy, unqdummy);
+        end
+    end
+end
+
+end

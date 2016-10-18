@@ -1,0 +1,34 @@
+function [final]= ClientSofiExecute( part_img,ncum,ntime,shiftTable,posTable,distFactor)
+% same as XCSofi, only on client    
+
+    tempSofi = -1*ones(size(part_img,1),size(part_img,2),ncum,ncum);
+    for i = 1:size(shiftTable,1)
+        tempSofi(:,:,posTable(i,1),posTable(i,2)) = SofiAnalysis(part_img,ncum,ntime,squeeze(shiftTable(i,:,:)));
+        tempSofi(:,:,posTable(i,1),posTable(i,2)) = tempSofi(:,:,posTable(i,1),posTable(i,2))/distFactor(i);
+    end
+    
+    % equalising intensity offsets with distance factor does not always
+    % work. Therefore following ammendmend
+    
+    intMeans = zeros(ncum,ncum);
+    meanIntensity = 0;
+    for k = 1:ncum
+        for l = 1:ncum
+           intMeans(k,l) = sum(sum(squeeze(tempSofi(:,:,k,l))));
+           meanIntensity = meanIntensity + intMeans(k,l);
+        end
+    end    
+    meanIntensity = mean(mean(intMeans));
+    
+    
+    final = zeros((size(tempSofi,1)-3)*ncum,(size(tempSofi,2)-3)*ncum);
+
+    for k = 1:ncum
+        for l = 1:ncum
+            tempSofi(:,:,k,l) = tempSofi(:,:,k,l)*meanIntensity/intMeans(k,l); 
+            final(k:ncum:end-(ncum-k),l:ncum:end-(ncum-l)) = tempSofi(2:end-2,2:end-2,k,l);
+        end
+    end    
+    
+end  
+

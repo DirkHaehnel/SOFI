@@ -1,0 +1,178 @@
+function  [finTable positionTable distanceFactor] = XCshift( ord, MaximumNumberOfSofiRuns,variance )
+% function hands shift parameters for input image to jobs computing the 
+% Sofi Analysis. This is plain ugly but doesnt have to be run with every
+% program start. the tables created can be stored in mat files and can be
+% loaded into the actual program doing the sofi analysis.
+
+ord = 3;
+MaximumNumberOfSofiRuns = 400;
+variance = 5;
+if ord == 2
+    if MaximumNumberOfSofiRuns > 73 
+        MaximumNumberOfSofiRuns = 73;   %these are the maximum numbers of combinations for a given order
+    end
+elseif ord == 3
+    if MaximumNumberOfSofiRuns > 3571 
+        MaximumNumberOfSofiRuns = 3571;
+    end
+else
+    if MaximumNumberOfSofiRuns > 166394
+        MaximumNumberOfSofiRuns = 166394;
+    end
+end
+[table occurrence distFactor equivalenceClass classDetails] = XCclasses(ord,variance);
+
+% if ord == 2,
+%     MaximumNumberOfSofiRuns = MaximumNumberOfSofiRuns*2;
+% end
+
+% shiftTable = shiftTable(combinationNumber,virtual position,pixelNumber,[x-Shift y-Shift t-Shift]) 
+% tabular holding the shift parameters (Shifts for each pixel in combination)
+% sorted according to virtual position, all virtual positions should eventually have an equal amount of combinations
+shiftTable = zeros(ceil(MaximumNumberOfSofiRuns/(ord^2)),ord^2,ord,3); 
+% final shift table
+finTable  = zeros(MaximumNumberOfSofiRuns,ord,3); 
+% table holding the virtual pixels coordinate for a shift set in shiftTable
+posTable = zeros(ceil(MaximumNumberOfSofiRuns/(ord^2)),ord^2,2); 
+positionTable = zeros(MaximumNumberOfSofiRuns,2);
+% table holding the distance factor
+dFactor = zeros(ceil(MaximumNumberOfSofiRuns/(ord^2)),ord^2);
+distanceFactor = zeros(MaximumNumberOfSofiRuns,1);
+
+iter = ord:-1:1; %index for time lag (used instead of 'i', so that autocumulant will be considered first, and then the zero time lag )
+if ord>2, 
+    iter(3:end) = iter(2:end-1);
+end
+iter(2)=1;
+
+for X = 1:ord % coordinates of virtual pixel in 4x4 array
+    for Y = 1:ord 
+        
+        countPerPosition = 1;
+        
+        for i = 1:ord
+            
+             if countPerPosition <= 1.5*MaximumNumberOfSofiRuns/(ord*ord);
+             last = sum(occurrence(X,Y,iter(i),:));
+             
+                 for d = 1:last % d goes through all distance factors (some are equal)
+
+                    % all pixel coordinates within a combination of time lag 0 (i = 1) are unique
+                    % for time lags >0 find out how many different sets x|y of pixel coordinates
+                    % exist within a combination and how many (and which) pixels overlap
+                    unqtable = unique(squeeze(table(X,Y,iter(i),d,:,:)),'rows');
+                    % piles = pile of pixels in one 'spatial slot'
+                    % pileMap shows which pixels in table have a twin in the combination 
+                    piles = zeros(ord,ord); pileMap = piles; 
+                    for c = 1:size(unqtable)
+                        [piles(:,c) pileMap(:,c)] = ismember(squeeze(table(X,Y,iter(i),d,:,:)),unqtable(c,:),'rows');% here piles == pileMap
+                    end % pileMap stores only ones because unqtable(t,:) has only one row
+                    piles = sum(piles,1); % get the number of overlapping pixels in a spatial slot
+                    [piles dummyIndex ]= sort(piles,'descend');
+                    slots = zeros(size(unqtable,1),max(piles),2);
+                    for c=1:size(unqtable) % c = columns, go through each empty slot
+                        s = 1;
+                        for r = 1:size(pileMap,2) % r = rows
+                            if pileMap(r,dummyIndex(c))~=0
+                                % store pixels in spatial slots, largest slot on the left side
+                                slots(c,s,:) = squeeze(table(X,Y,iter(i),d,r,:)); 
+                                s = s+1;
+                            end
+                        end
+                    end
+                    
+                    for c = iter(i):ord %-offset(k,iter(i)) % number of frames used (can be more than required to avoid shot noise)
+                        str1 = [];str2 = [];str3 = [];
+                        % commands for creating timeShifts for pixel combinations are created
+                        % dynamically as time lag and pile sizes change on each iteration
+                        for r = 1:size(slots,1) % go through each slot
+                            t{r,1} = nchoosek(1:c,piles(r));
+                            str1 = [str1 '1:size(t{' num2str(r) '},1),'];
+                            str2 = [str2 'p{' num2str(r) '} '];
+                            str3 = [str3 't{' num2str(r) '}(p{' num2str(r) '},:),'];
+                        end
+                        str1 = ['ndgrid(' str1(1:end-1) ');'];
+                        str2 = ['[' str2(1:end-1) ']'];
+                        eval([str2 '=' str1]);
+                        str3 = [ '[' str3(1:end-1) ']'];
+                        % timeShifts holds all 'temporal' combinations of ord pixels
+                        timeShifts = eval(str3);
+                        % combinations where first level is vacant will be deleted
+                        vacancies = zeros(size(timeShifts,1),c);
+                        firstLast = zeros(c,1);firstLast(1:2) = [1 c];
+                        
+                        if c==1
+                            for r = 1:size(timeShifts,1)
+                                vacancies(r,:) = ismember(c,timeShifts(r,:));
+                            end
+                            timeShifts = timeShifts((sum(vacancies,2)>=1)~=0,:);
+                        else
+                            for r = 1:size(timeShifts,1) % only restriction: first and last frame have to be occupied->firstLast
+                                unqShift = unique(timeShifts(r,:));
+                                vacancies(r,:) = ismember(firstLast,unqShift);
+                            end
+                            timeShifts = timeShifts((sum(vacancies,2)>=2)~=0,:);
+                        end
+                        
+                        for m = 1:size(timeShifts,1)
+                            if countPerPosition <=  1.5*MaximumNumberOfSofiRuns/(ord*ord);
+                                for n = 1:ord
+                                   shiftTable(countPerPosition,(X-1)*ord+Y,n,:) = [squeeze(table(X,Y,iter(i),d,n,1)) squeeze(table(X,Y,iter(i),d,n,2)) timeShifts(m,n)];
+                                end 
+                                posTable(countPerPosition,(X-1)*ord+Y,:) = [X Y];
+                                dFactor(countPerPosition,(X-1)*ord+Y) = distFactor(X,Y,iter(i),d);
+                                countPerPosition  = countPerPosition  +1;
+                            end
+                        end
+                        
+                    end
+                    
+                 end
+                 
+             end
+        end
+    end
+end
+
+% find out how many combinations each position has
+posCombsCount = zeros(ord^2,1);
+for X=1:ord
+    for Y=1:ord
+        posCombsCount((X-1)*ord+Y) = size(squeeze(shiftTable(:,(X-1)*ord+Y,:,:)),1);
+    end
+end
+
+% set delimiter for each position, so that required amount of combinations
+% is computed but all positions are represented as much as possible
+
+while(sum(posCombsCount)>MaximumNumberOfSofiRuns)
+
+    [maxComb maxInd] = max(posCombsCount);
+    posCombsCount(maxInd) = posCombsCount(maxInd)-1;
+    
+end
+
+% put 
+for k = 1:size(shiftTable,1)
+    for X=1:ord
+        for Y=1:ord
+            if ~isequal(squeeze(shiftTable(k,(X-1)*ord+Y,:,:)),zeros(ord,3))
+                if k< posCombsCount((X-1)*ord+Y)
+                    finTable((k-1)*(ord^2)+((X-1)*ord+Y),:,:) = squeeze(shiftTable(k,(X-1)*ord+Y,:,:));
+                    positionTable((k-1)*(ord^2)+((X-1)*ord+Y),:) = posTable(k,(X-1)*ord+Y,:);
+                    distanceFactor((k-1)*(ord^2)+((X-1)*ord+Y)) = dFactor(k,(X-1)*ord+Y);
+                end
+            end
+        end
+    end    
+end
+
+finTable = finTable(finTable~=0); %get rid of empty rows
+finTable = reshape(finTable,[size(finTable,1)/(ord*3) ord 3]);
+
+for k= size(positionTable,1):-1:1
+    if isequal(positionTable(k,:),zeros(1,2)),positionTable(k,:) = []; end
+    if distanceFactor(k)== 0,distanceFactor(k) = []; end
+end
+
+end
